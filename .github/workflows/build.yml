@@ -1,0 +1,36 @@
+name: Build APK
+on: workflow_dispatch
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          submodules: recursive
+      - uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: 17
+      - uses: actions/setup-go@v5
+        with:
+          go-version: stable
+      - run: sudo apt-get update && sudo apt-get install -y ninja-build
+      - name: API keys
+        run: |
+          echo "APP_ID = ${{ secrets.APP_ID }}" > API_KEYS
+          echo "APP_HASH = ${{ secrets.APP_HASH }}" >> API_KEYS
+      - name: Native deps
+        working-directory: TMessagesProj/jni
+        run: |
+          export NDK=$ANDROID_NDK_LATEST_HOME
+          export NINJA_PATH=$(which ninja)
+          ./build_libvpx_clang.sh
+          ./build_ffmpeg_clang.sh
+          ./patch_ffmpeg.sh
+          ./patch_boringssl.sh
+          ./build_boringssl.sh
+      - run: ./gradlew assembleAfatRelease
+      - uses: actions/upload-artifact@v4
+        with:
+          name: akgram-apk
+          path: '**/build/outputs/apk/**/*.apk'
