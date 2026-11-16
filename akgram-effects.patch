@@ -1,0 +1,110 @@
+diff --git a/TMessagesProj/src/main/java/org/telegram/ui/GroupCallActivity.java b/TMessagesProj/src/main/java/org/telegram/ui/GroupCallActivity.java
+index e5f97bd0..b64ed0f1 100644
+--- a/TMessagesProj/src/main/java/org/telegram/ui/GroupCallActivity.java
++++ b/TMessagesProj/src/main/java/org/telegram/ui/GroupCallActivity.java
+@@ -178,6 +178,9 @@ public class GroupCallActivity extends BottomSheet implements NotificationCenter
+     private static final int screen_capture_item = 9;
+     private static final int sound_item = 10;
+     private static final int noise_item = 11;
++    private static final int voice_effect_item = 100;
++    private static final String[] VOICE_EFFECT_NAMES = {"Normal", "Loud", "Extra loud", "Echo"};
++    private ActionBarMenuSubItem voiceEffectItem;
+     private static final int user_item_gap = 0;
+ 
+     private static final int MUTE_BUTTON_STATE_UNMUTE = 0;
+@@ -1889,6 +1892,12 @@ public class GroupCallActivity extends BottomSheet implements NotificationCenter
+                         button.setTextColor(Theme.getColor(Theme.key_voipgroup_leaveCallMenu));
+                     }
+                     dialog.setTextColor(Theme.getColor(Theme.key_voipgroup_actionBarItems));
++                } else if (id == voice_effect_item) {
++                    int next = (org.webrtc.voiceengine.WebRtcAudioRecord.voiceEffect + 1) % VOICE_EFFECT_NAMES.length;
++                    org.webrtc.voiceengine.WebRtcAudioRecord.voiceEffect = next;
++                    if (voiceEffectItem != null) {
++                        voiceEffectItem.setText("Voice: " + VOICE_EFFECT_NAMES[next]);
++                    }
+                 } else if (id == screen_capture_item) {
+                     screenShareItem.callOnClick();
+                 } else if (id == start_record_item) {
+@@ -4574,6 +4583,7 @@ public class GroupCallActivity extends BottomSheet implements NotificationCenter
+         screenItem = otherItem.addSubItem(screen_capture_item, R.drawable.msg_screencast, LocaleController.getString("VoipChatStartScreenCapture", R.string.VoipChatStartScreenCapture));
+         recordItem = otherItem.addSubItem(start_record_item, 0, recordCallDrawable, LocaleController.getString("VoipGroupRecordCall", R.string.VoipGroupRecordCall), true, false);
+         recordCallDrawable.setParentView(recordItem.getImageView());
++        voiceEffectItem = otherItem.addSubItem(voice_effect_item, R.drawable.msg_voice_speaker, "Voice: " + VOICE_EFFECT_NAMES[org.webrtc.voiceengine.WebRtcAudioRecord.voiceEffect]);
+         leaveItem = otherItem.addSubItem(leave_item, R.drawable.msg_endcall, ChatObject.isChannelOrGiga(currentChat) ? LocaleController.getString("VoipChannelEndChat", R.string.VoipChannelEndChat) : LocaleController.getString("VoipGroupEndChat", R.string.VoipGroupEndChat));
+         otherItem.setPopupItemsSelectorColor(Theme.getColor(Theme.key_voipgroup_listSelector));
+         otherItem.getPopupLayout().setFitItems(true);
+diff --git a/TMessagesProj/src/main/java/org/webrtc/voiceengine/WebRtcAudioRecord.java b/TMessagesProj/src/main/java/org/webrtc/voiceengine/WebRtcAudioRecord.java
+index 5ea67a8d..e842b2c6 100644
+--- a/TMessagesProj/src/main/java/org/webrtc/voiceengine/WebRtcAudioRecord.java
++++ b/TMessagesProj/src/main/java/org/webrtc/voiceengine/WebRtcAudioRecord.java
+@@ -70,6 +70,62 @@ public class WebRtcAudioRecord {
+   private static volatile boolean microphoneMute;
+   private byte[] emptyBytes;
+ 
++  // AK gram voice effects: 0 normal, 1 loud, 2 extra loud, 3 echo
++  public static volatile int voiceEffect = 0;
++  private short[] echoBuf;
++  private int echoPos;
++
++  private void applyVoiceEffect(ByteBuffer buf, int bytes) {
++    int effect = voiceEffect;
++    if (effect == 0) {
++      return;
++    }
++    int n = bytes / 2;
++    if (effect == 1 || effect == 2) {
++      int gain = effect == 1 ? 2 : 4;
++      for (int i = 0; i < n; i++) {
++        int v = buf.getShort(i * 2) * gain;
++        if (v > 32767) {
++          v = 32767;
++        } else if (v < -32768) {
++          v = -32768;
++        }
++        buf.putShort(i * 2, (short) v);
++      }
++    } else if (effect == 3) {
++      int delay = requestedSampleRate * requestedChannels * 3 / 10;
++      if (delay <= 0) {
++        return;
++      }
++      if (echoBuf == null || echoBuf.length != delay) {
++        echoBuf = new short[delay];
++        echoPos = 0;
++      }
++      for (int i = 0; i < n; i++) {
++        int dry = buf.getShort(i * 2);
++        int wet = echoBuf[echoPos];
++        int out = dry + wet / 2;
++        if (out > 32767) {
++          out = 32767;
++        } else if (out < -32768) {
++          out = -32768;
++        }
++        buf.putShort(i * 2, (short) out);
++        int fb = dry + wet * 2 / 5;
++        if (fb > 32767) {
++          fb = 32767;
++        } else if (fb < -32768) {
++          fb = -32768;
++        }
++        echoBuf[echoPos] = (short) fb;
++        echoPos++;
++        if (echoPos >= delay) {
++          echoPos = 0;
++        }
++      }
++    }
++  }
++
+   private int captureType;
+ 
+   private int requestedSampleRate = 48000;
+@@ -179,6 +235,7 @@ public class WebRtcAudioRecord {
+             byteBuffer.clear();
+             byteBuffer.put(emptyBytes);
+           }
++          applyVoiceEffect(byteBuffer, bytesRead);
+           if (bytesRead == deviceBytesRead) {
+             deviceByteBuffer.position(0);
+             byteBuffer.position(0);
