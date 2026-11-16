@@ -19,10 +19,12 @@ jobs:
         run: |
           echo "APP_ID = ${{ secrets.APP_ID }}" > API_KEYS
           echo "APP_HASH = ${{ secrets.APP_HASH }}" >> API_KEYS
+      - name: Install NDK
+        run: yes | $ANDROID_HOME/cmdline-tools/latest/bin/sdkmanager "ndk;21.4.7075529"
       - name: Native deps
         working-directory: TMessagesProj/jni
         run: |
-          export NDK=$ANDROID_NDK_LATEST_HOME
+          export NDK=$ANDROID_HOME/ndk/21.4.7075529
           export NINJA_PATH=$(which ninja)
           ./build_libvpx_clang.sh
           ./build_ffmpeg_clang.sh
