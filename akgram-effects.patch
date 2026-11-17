@@ -1,14 +1,47 @@
+diff --git a/TMessagesProj/src/main/java/org/telegram/messenger/voip/VoIPService.java b/TMessagesProj/src/main/java/org/telegram/messenger/voip/VoIPService.java
+index 71f5ffb9..076752e2 100755
+--- a/TMessagesProj/src/main/java/org/telegram/messenger/voip/VoIPService.java
++++ b/TMessagesProj/src/main/java/org/telegram/messenger/voip/VoIPService.java
+@@ -507,13 +507,19 @@ public class VoIPService extends Service implements SensorEventListener, AudioMa
+         }
+         unmutedByHold = !micMute && hold;
+         if (tgVoip[CAPTURE_DEVICE_CAMERA] != null) {
+-            tgVoip[CAPTURE_DEVICE_CAMERA].setMuteMicrophone(mute);
++            tgVoip[CAPTURE_DEVICE_CAMERA].setMuteMicrophone(mute && !org.webrtc.voiceengine.WebRtcAudioRecord.ghostTalk);
+         }
+         for (StateListener l : stateListeners) {
+             l.onAudioSettingsChanged();
+         }
+     }
+
++    public void syncGhostTalk() {
++        if (tgVoip[CAPTURE_DEVICE_CAMERA] != null) {
++            tgVoip[CAPTURE_DEVICE_CAMERA].setMuteMicrophone(micMute && !org.webrtc.voiceengine.WebRtcAudioRecord.ghostTalk);
++        }
++    }
++
+     public boolean mutedByAdmin() {
+         ChatObject.Call call = groupCall;
+         if (call != null) {
 diff --git a/TMessagesProj/src/main/java/org/telegram/ui/GroupCallActivity.java b/TMessagesProj/src/main/java/org/telegram/ui/GroupCallActivity.java
-index e5f97bd0..2b4a69a9 100644
+index e5f97bd0..87a062ed 100644
 --- a/TMessagesProj/src/main/java/org/telegram/ui/GroupCallActivity.java
 +++ b/TMessagesProj/src/main/java/org/telegram/ui/GroupCallActivity.java
-@@ -178,6 +178,18 @@ public class GroupCallActivity extends BottomSheet implements NotificationCenter
+@@ -178,6 +178,26 @@ public class GroupCallActivity extends BottomSheet implements NotificationCenter
      private static final int screen_capture_item = 9;
      private static final int sound_item = 10;
      private static final int noise_item = 11;
 +    private static final int voice_effect_item = 100;
 +    private static final String[] VOICE_EFFECT_NAMES = {"Normal", "Loud", "Extra loud", "Echo", "Adult man", "Little boy", "Little girl", "Echo + Ultra loud", "Torn + noisy", "Adult woman (clear)"};
 +    private ActionBarMenuSubItem[] voiceEffectItems = new ActionBarMenuSubItem[VOICE_EFFECT_NAMES.length];
++    private static final int ghost_talk_item = 150;
++    private ActionBarMenuSubItem ghostTalkItem;
++
++    private void updateGhostTalkItem() {
++        if (ghostTalkItem != null) {
++            ghostTalkItem.setText("Ghost talk: " + (org.webrtc.voiceengine.WebRtcAudioRecord.ghostTalk ? "ON" : "OFF"));
++        }
++    }
 +
 +    private void updateVoiceEffectItems() {
 +        int cur = org.webrtc.voiceengine.WebRtcAudioRecord.voiceEffect;
@@ -21,17 +54,24 @@ index e5f97bd0..2b4a69a9 100644
      private static final int user_item_gap = 0;
 
      private static final int MUTE_BUTTON_STATE_UNMUTE = 0;
-@@ -1889,6 +1901,9 @@ public class GroupCallActivity extends BottomSheet implements NotificationCenter
+@@ -1889,6 +1909,16 @@ public class GroupCallActivity extends BottomSheet implements NotificationCenter
                          button.setTextColor(Theme.getColor(Theme.key_voipgroup_leaveCallMenu));
                      }
                      dialog.setTextColor(Theme.getColor(Theme.key_voipgroup_actionBarItems));
++                } else if (id == ghost_talk_item) {
++                    org.webrtc.voiceengine.WebRtcAudioRecord.ghostTalk = !org.webrtc.voiceengine.WebRtcAudioRecord.ghostTalk;
++                    VoIPService ghostService = VoIPService.getSharedInstance();
++                    if (ghostService != null) {
++                        ghostService.syncGhostTalk();
++                    }
++                    updateGhostTalkItem();
 +                } else if (id >= voice_effect_item && id < voice_effect_item + VOICE_EFFECT_NAMES.length) {
 +                    org.webrtc.voiceengine.WebRtcAudioRecord.voiceEffect = id - voice_effect_item;
 +                    updateVoiceEffectItems();
                  } else if (id == screen_capture_item) {
                      screenShareItem.callOnClick();
                  } else if (id == start_record_item) {
-@@ -4574,6 +4589,10 @@ public class GroupCallActivity extends BottomSheet implements NotificationCenter
+@@ -4574,6 +4604,12 @@ public class GroupCallActivity extends BottomSheet implements NotificationCenter
          screenItem = otherItem.addSubItem(screen_capture_item, R.drawable.msg_screencast, LocaleController.getString("VoipChatStartScreenCapture", R.string.VoipChatStartScreenCapture));
          recordItem = otherItem.addSubItem(start_record_item, 0, recordCallDrawable, LocaleController.getString("VoipGroupRecordCall", R.string.VoipGroupRecordCall), true, false);
          recordCallDrawable.setParentView(recordItem.getImageView());
@@ -39,14 +79,16 @@ index e5f97bd0..2b4a69a9 100644
 +            voiceEffectItems[i] = otherItem.addSubItem(voice_effect_item + i, R.drawable.msg_voice_speaker, VOICE_EFFECT_NAMES[i]);
 +        }
 +        updateVoiceEffectItems();
++        ghostTalkItem = otherItem.addSubItem(ghost_talk_item, R.drawable.msg_voice_speaker, "Ghost talk: OFF");
++        updateGhostTalkItem();
          leaveItem = otherItem.addSubItem(leave_item, R.drawable.msg_endcall, ChatObject.isChannelOrGiga(currentChat) ? LocaleController.getString("VoipChannelEndChat", R.string.VoipChannelEndChat) : LocaleController.getString("VoipGroupEndChat", R.string.VoipGroupEndChat));
          otherItem.setPopupItemsSelectorColor(Theme.getColor(Theme.key_voipgroup_listSelector));
          otherItem.getPopupLayout().setFitItems(true);
 diff --git a/TMessagesProj/src/main/java/org/webrtc/voiceengine/WebRtcAudioRecord.java b/TMessagesProj/src/main/java/org/webrtc/voiceengine/WebRtcAudioRecord.java
-index 5ea67a8d..bb275a02 100644
+index 5ea67a8d..c6bb79c0 100644
 --- a/TMessagesProj/src/main/java/org/webrtc/voiceengine/WebRtcAudioRecord.java
 +++ b/TMessagesProj/src/main/java/org/webrtc/voiceengine/WebRtcAudioRecord.java
-@@ -70,6 +70,209 @@ public class WebRtcAudioRecord {
+@@ -70,6 +70,211 @@ public class WebRtcAudioRecord {
    private static volatile boolean microphoneMute;
    private byte[] emptyBytes;
 
@@ -54,6 +96,8 @@ index 5ea67a8d..bb275a02 100644
 +  // 0 normal, 1 loud, 2 extra loud, 3 echo, 4 adult man, 5 little boy, 6 little girl,
 +  // 7 echo + ultra loud, 8 torn + noisy, 9 adult woman (clear)
 +  public static volatile int voiceEffect = 0;
++  // ghost talk: server shows you as muted, but your microphone audio is still sent
++  public static volatile boolean ghostTalk = false;
 +  private short[] echoBuf;
 +  private int echoPos;
 +
@@ -256,7 +300,7 @@ index 5ea67a8d..bb275a02 100644
    private int captureType;
 
    private int requestedSampleRate = 48000;
-@@ -179,6 +382,7 @@ public class WebRtcAudioRecord {
+@@ -179,6 +384,7 @@ public class WebRtcAudioRecord {
              byteBuffer.clear();
              byteBuffer.put(emptyBytes);
            }
