@@ -1,5 +1,5 @@
 diff --git a/TMessagesProj/src/main/java/org/telegram/ui/GroupCallActivity.java b/TMessagesProj/src/main/java/org/telegram/ui/GroupCallActivity.java
-index e5f97bd0..40a24dfb 100644
+index e5f97bd0..2b4a69a9 100644
 --- a/TMessagesProj/src/main/java/org/telegram/ui/GroupCallActivity.java
 +++ b/TMessagesProj/src/main/java/org/telegram/ui/GroupCallActivity.java
 @@ -178,6 +178,18 @@ public class GroupCallActivity extends BottomSheet implements NotificationCenter
@@ -7,7 +7,7 @@ index e5f97bd0..40a24dfb 100644
      private static final int sound_item = 10;
      private static final int noise_item = 11;
 +    private static final int voice_effect_item = 100;
-+    private static final String[] VOICE_EFFECT_NAMES = {"Normal", "Loud", "Extra loud", "Echo", "Adult man", "Little boy", "Little girl"};
++    private static final String[] VOICE_EFFECT_NAMES = {"Normal", "Loud", "Extra loud", "Echo", "Adult man", "Little boy", "Little girl", "Echo + Ultra loud", "Torn + noisy", "Adult woman (clear)"};
 +    private ActionBarMenuSubItem[] voiceEffectItems = new ActionBarMenuSubItem[VOICE_EFFECT_NAMES.length];
 +
 +    private void updateVoiceEffectItems() {
@@ -43,15 +43,16 @@ index e5f97bd0..40a24dfb 100644
          otherItem.setPopupItemsSelectorColor(Theme.getColor(Theme.key_voipgroup_listSelector));
          otherItem.getPopupLayout().setFitItems(true);
 diff --git a/TMessagesProj/src/main/java/org/webrtc/voiceengine/WebRtcAudioRecord.java b/TMessagesProj/src/main/java/org/webrtc/voiceengine/WebRtcAudioRecord.java
-index 5ea67a8d..7012d2a4 100644
+index 5ea67a8d..bb275a02 100644
 --- a/TMessagesProj/src/main/java/org/webrtc/voiceengine/WebRtcAudioRecord.java
 +++ b/TMessagesProj/src/main/java/org/webrtc/voiceengine/WebRtcAudioRecord.java
-@@ -70,6 +70,140 @@ public class WebRtcAudioRecord {
+@@ -70,6 +70,209 @@ public class WebRtcAudioRecord {
    private static volatile boolean microphoneMute;
    private byte[] emptyBytes;
 
 +  // AK gram voice effects:
-+  // 0 normal, 1 loud, 2 extra loud, 3 echo, 4 adult man, 5 little boy, 6 little girl
++  // 0 normal, 1 loud, 2 extra loud, 3 echo, 4 adult man, 5 little boy, 6 little girl,
++  // 7 echo + ultra loud, 8 torn + noisy, 9 adult woman (clear)
 +  public static volatile int voiceEffect = 0;
 +  private short[] echoBuf;
 +  private int echoPos;
@@ -60,13 +61,69 @@ index 5ea67a8d..7012d2a4 100644
 +  private float xlEnv = 0f;
 +
 +  // pitch shifter: two crossfaded delay taps. ratio > 1 higher voice, < 1 deeper voice
-+  private static final float[] PITCH_RATIOS = {0.78f, 1.5f, 1.8f};
++  // order: adult man, little boy, little girl, adult woman
++  private static final float[] PITCH_RATIOS = {0.78f, 1.5f, 1.8f, 1.4f};
 +  private static final int PS_W = 1920;
 +  private static final int PS_SIZE = 8192;
 +  private static final int PS_MASK = PS_SIZE - 1;
 +  private final float[][] psBuf = new float[2][PS_SIZE];
 +  private final int[] psPos = new int[2];
 +  private final float[] psPhase = new float[2];
++
++  // torn + noisy: crunchy low sample rate, overdrive, muffled, background hiss, crackle, dropouts
++  private int tnSeed = 12345;
++  private int tnCount = 0;
++  private float tnHold = 0f;
++  private float tnLp = 0f;
++  private float tnPop = 0f;
++  private int tnDrop = 0;
++  private float tnPh = 0f;
++
++  private float tnRand() {
++    tnSeed ^= tnSeed << 13;
++    tnSeed ^= tnSeed >>> 17;
++    tnSeed ^= tnSeed << 5;
++    return tnSeed * (1f / 2147483648f);
++  }
++
++  private void tornNoisy(ByteBuffer buf, int bytes) {
++    int n = bytes / 2;
++    for (int i = 0; i < n; i++) {
++      float s = buf.getShort(i * 2);
++      if ((tnCount++ & 3) == 0) {
++        tnHold = s;
++      }
++      float x = tnHold * 10f;
++      if (x > 12000f) {
++        x = 12000f;
++      } else if (x < -12000f) {
++        x = -12000f;
++      }
++      tnLp += (x - tnLp) * 0.28f;
++      tnPh += 0.00039f;
++      if (tnPh > 6.2831853f) {
++        tnPh -= 6.2831853f;
++      }
++      float y = tnLp * 1.5f + tnRand() * 5000f * (0.7f + 0.3f * (float) Math.sin(tnPh));
++      if (tnRand() > 0.9995f) {
++        tnPop = tnRand() * 20000f;
++      }
++      y += tnPop;
++      tnPop *= 0.9f;
++      if (tnDrop > 0) {
++        tnDrop--;
++        y *= 0.1f;
++      } else if (tnRand() > 0.99995f) {
++        tnDrop = 100 + (int) (Math.abs(tnRand()) * 300f);
++      }
++      if (y > 32767f) {
++        y = 32767f;
++      } else if (y < -32768f) {
++        y = -32768f;
++      }
++      buf.putShort(i * 2, (short) y);
++    }
++  }
 +
 +  private static float psRead(float[] dl, int w, float d) {
 +    int ip = (int) d;
@@ -130,6 +187,40 @@ index 5ea67a8d..7012d2a4 100644
 +    xlEnv = env;
 +  }
 +
++  private void echoEffect(ByteBuffer buf, int bytes) {
++    int n = bytes / 2;
++    int delay = requestedSampleRate * requestedChannels * 3 / 10;
++    if (delay <= 0) {
++      return;
++    }
++    if (echoBuf == null || echoBuf.length != delay) {
++      echoBuf = new short[delay];
++      echoPos = 0;
++    }
++    for (int i = 0; i < n; i++) {
++      int dry = buf.getShort(i * 2);
++      int wet = echoBuf[echoPos];
++      int out = dry + wet / 2;
++      if (out > 32767) {
++        out = 32767;
++      } else if (out < -32768) {
++        out = -32768;
++      }
++      buf.putShort(i * 2, (short) out);
++      int fb = dry + wet * 2 / 5;
++      if (fb > 32767) {
++        fb = 32767;
++      } else if (fb < -32768) {
++        fb = -32768;
++      }
++      echoBuf[echoPos] = (short) fb;
++      echoPos++;
++      if (echoPos >= delay) {
++        echoPos = 0;
++      }
++    }
++  }
++
 +  private void applyVoiceEffect(ByteBuffer buf, int bytes) {
 +    int effect = voiceEffect;
 +    if (effect == 0) {
@@ -140,6 +231,13 @@ index 5ea67a8d..7012d2a4 100644
 +      extraLoud(buf, bytes);
 +    } else if (effect >= 4 && effect <= 6) {
 +      pitchShift(buf, bytes, PITCH_RATIOS[effect - 4]);
++    } else if (effect == 9) {
++      pitchShift(buf, bytes, PITCH_RATIOS[3]);
++    } else if (effect == 7) {
++      echoEffect(buf, bytes);
++      extraLoud(buf, bytes);
++    } else if (effect == 8) {
++      tornNoisy(buf, bytes);
 +    } else if (effect == 1) {
 +      for (int i = 0; i < n; i++) {
 +        int v = buf.getShort(i * 2) * 2;
@@ -151,43 +249,14 @@ index 5ea67a8d..7012d2a4 100644
 +        buf.putShort(i * 2, (short) v);
 +      }
 +    } else if (effect == 3) {
-+      int delay = requestedSampleRate * requestedChannels * 3 / 10;
-+      if (delay <= 0) {
-+        return;
-+      }
-+      if (echoBuf == null || echoBuf.length != delay) {
-+        echoBuf = new short[delay];
-+        echoPos = 0;
-+      }
-+      for (int i = 0; i < n; i++) {
-+        int dry = buf.getShort(i * 2);
-+        int wet = echoBuf[echoPos];
-+        int out = dry + wet / 2;
-+        if (out > 32767) {
-+          out = 32767;
-+        } else if (out < -32768) {
-+          out = -32768;
-+        }
-+        buf.putShort(i * 2, (short) out);
-+        int fb = dry + wet * 2 / 5;
-+        if (fb > 32767) {
-+          fb = 32767;
-+        } else if (fb < -32768) {
-+          fb = -32768;
-+        }
-+        echoBuf[echoPos] = (short) fb;
-+        echoPos++;
-+        if (echoPos >= delay) {
-+          echoPos = 0;
-+        }
-+      }
++      echoEffect(buf, bytes);
 +    }
 +  }
 +
    private int captureType;
 
    private int requestedSampleRate = 48000;
-@@ -179,6 +313,7 @@ public class WebRtcAudioRecord {
+@@ -179,6 +382,7 @@ public class WebRtcAudioRecord {
              byteBuffer.clear();
              byteBuffer.put(emptyBytes);
            }
