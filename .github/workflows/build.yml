@@ -68,7 +68,7 @@ jobs:
           key: native-ndk21-${{ hashFiles('.gitmodules', 'TMessagesProj/jni/*.sh', 'TMessagesProj/jni/patches/**') }}
 
       - name: Apply AK gram patch
-        run: git apply --verbose akgram-effects.patch
+                run: git apply --ignore-whitespace --verbose akgram-effects.patch
 
       - name: Build APK
         run: ./gradlew :TMessagesProj_App:assembleAfatRelease --no-daemon --stacktrace
